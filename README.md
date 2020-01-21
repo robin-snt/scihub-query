@@ -20,14 +20,16 @@ scihub-query --help
 
 ## Configuration
 
-`scihub-query` requires scihub credentials to work. These can be written to `~/.config/scihub-query/scihub-query.toml`:
+`scihub-query` requires scihub credentials to work. These can be written manually to `~/.config/scihub-query/scihub-query.toml`, or entered by providing the `-s` flag.
 
-```
+The config file format is as follows:
+
+```toml
 username = 'john'
 password = 'my-secret-scihub-password'
 ```
 
-You will be prompted to enter your credentials if they are unavailable.
+You will be prompted to enter your credentials if they are not found.
 
 ## Desired features
 
@@ -35,7 +37,3 @@ You will be prompted to enter your credentials if they are unavailable.
 - [ ] Improved parameterization of query inputs.
 - [ ] Converting the entire XML response into JSON.
 - [ ] POST requests for large AOI's if scihub supports it.
-
-## Known bugs
-- [ ] Reading scihub credentials fails if application is not running in an interactive terminal. E.g if wkt file read from stdin pipe. Just ensure you read wkt from an actual file the first time you execute the application, or create the config file manually.
-- [ ] Reading scihub credentials is performed twice :( -- Only happens the first time though.

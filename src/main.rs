@@ -26,20 +26,10 @@ struct Entry {
     title: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct ScihubConfig {
     username: String,
     password: String,
-}
-
-// TODO: credentials are asked TWICE!??
-impl Default for ScihubConfig {
-    fn default() -> Self {
-        ScihubConfig {
-            username: input().msg("Enter scihub username: ").get(),
-            password: input().msg("Enter scihub password: ").get(),
-        }
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .short("b")
             .long("--begin-time")
             .takes_value(true)
-            .required(true)
+            .required_unless("STORECREDS")
             .help("Date range start (YYYY-MM-DD)"))
         .arg(Arg::with_name("END")
             .short("e")
@@ -68,16 +58,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .default_value("1C"))
         .arg(Arg::with_name("WKT")
             .takes_value(true)
-            .required(true)
+            .required_unless("STORECREDS")
             .help("Specify ROI wkt file (`-` for stdin)"))
         .arg(Arg::with_name("CCOVER")
-            .short("C")
+            .short("c")
             .long("--cloud-cover")
             .takes_value(true)
             .help("Cloud cover percentage. 0 (clear sky) - 100 (complete cover)"))
+        .arg(Arg::with_name("STORECREDS")
+            .short("s")
+            .long("--store-credentials")
+            .help("Write new scihub credentials"))
     .get_matches();
 
     let cfg: ScihubConfig = confy::load(crate_name!())?;
+    if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
+        panic!("No scihub credentials found! Run `scihub-query -s`");
+    }
+
+    if m.is_present("STORECREDS") {
+        let new_cfg = ScihubConfig {
+            username: input().msg("Enter scihub username: ").get(),
+            password: input().msg("Enter scihub password: ").get(),
+        };
+
+        confy::store(crate_name!(), new_cfg)?;
+        println!("Credentials stored! \
+                  Subsequent queries will use newly entered credentials..");
+        return Ok(());
+    }
 
     let mut wkt = String::new();
 
