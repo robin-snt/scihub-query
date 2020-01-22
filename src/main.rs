@@ -10,6 +10,7 @@ use clap::{Arg, App};
 
 use std::io::{self, Read};
 use std::fs::File;
+use std::{fmt, error::Error};
 use read_input::prelude::*;
 
 use serde::{Serialize, Deserialize};
@@ -32,7 +33,41 @@ struct ScihubConfig {
     password: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Specific error types and traits to convert error from output type of Url::set_* output type of
+// reqwest::blocking::get() ..
+
+#[derive(Debug)]
+enum SciQueryError {
+    Credential(())
+}
+
+trait UrlCreds {
+    fn set_credentials(&mut self, cfg: &ScihubConfig) -> Result<(), SciQueryError>;
+}
+
+impl From<()> for SciQueryError {
+    fn from(_: ()) -> SciQueryError {
+        SciQueryError::Credential(())
+    }
+}
+
+impl UrlCreds for reqwest::Url {
+    fn set_credentials(&mut self, cfg: &ScihubConfig) -> Result<(), SciQueryError> {
+        self.set_username(&cfg.username.as_str())?;
+        self.set_password(Some(&cfg.password.as_str()))?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for SciQueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error when setting credentials!")
+    }
+}
+
+impl Error for SciQueryError {}
+
+fn main() -> Result<(), Box<dyn Error>> {
     let m = App::new(crate_name!())
         .version(crate_version!())
         .author(crate_authors!())
@@ -71,6 +106,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .help("Write new scihub credentials"))
     .get_matches();
 
+    // Entering new config is problematic when reading from stdin if the WKT data is also piped in
+    // from stdin. Since checking if the app is running in an interactive shell requires libc,
+    // we want to avoid this scenario all toghether as running this app on Alpine linux would use
+    // musl instead of libc. Hence the panic when unconfigured and early return to avoid mutating
+    // the config struct after setting new values.
     let cfg: ScihubConfig = confy::load(crate_name!())?;
     if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
         panic!("No scihub credentials found! Run `scihub-query -s`");
@@ -94,12 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "-" => {
             let stdin = io::stdin();
             let mut handle = stdin.lock();
-            match handle.read_to_string(&mut wkt) {
-                Ok(_) => {}
-                Err(e) => {
-                    panic!("Error {:?}", e);
-                }
-            }
+            handle.read_to_string(&mut wkt).expect("Error reading from stdin!");
         },
         filename => {
             let mut f = File::open(filename).expect("file not found");
@@ -123,18 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
-    match url.set_username(cfg.username.as_str()) {
-        Ok(_) => {}
-        Err(_) => {
-            panic!("Missing scihub username!");
-        }
-    }
-    match url.set_password(Some(cfg.password.as_str())) {
-        Ok(_) => {}
-        Err(_) => {
-            panic!("Missing scihub password!");
-        }
-    };
+    url.set_credentials(&cfg)?;
     url.query_pairs_mut().append_pair("rows", "100");
     url.query_pairs_mut().append_pair("orderby", "beginposition asc");
     let querystring = format!("platformname:Sentinel-2 \
@@ -151,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // TODO: check if scihub paginated calls can be async
-fn request(url: &str, start: isize) -> Result<(), Box<dyn std::error::Error>> {
+fn request(url: &str, start: usize) -> Result<(), Box<dyn std::error::Error>> {
     let mut paginated_url = reqwest::Url::parse(url)?;
     paginated_url.query_pairs_mut().append_pair("start", format!("{}", start).as_str());
 
@@ -192,11 +216,10 @@ fn request(url: &str, start: isize) -> Result<(), Box<dyn std::error::Error>> {
     }
     else {
         match status.as_u16() {
-            400 => {panic!("Exceeded scihub max row amount of 100!"); },
+            400 => panic!("Exceeded scihub max row amount of 100!"),
             // TODO: check if scihub API supports POST
-            414 => {panic!("Query string exceeds 2kB!
-                              Probably too long WKT string..."); },
-            _ => {panic!("Invalid response: {}", status); }
+            414 => panic!("Query too large! Probably too long WKT string..."),
+            _ => panic!("Invalid response: {}", status)
         }
     }
 
