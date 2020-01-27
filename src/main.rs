@@ -11,7 +11,7 @@ use clap::{Arg, App};
 
 use std::io::{self, Read};
 use std::fs::File;
-use std::{fmt, error::Error};
+use std::{fmt, error::Error, env::var};
 use read_input::prelude::*;
 
 use serde::{Serialize, Deserialize};
@@ -117,27 +117,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .help("Print scihub query string and exit"))
     .get_matches();
 
-    // Entering new config is problematic when reading from stdin f.ex if the WKT data is piped
-    // from stdin. Since checking if the app is running in an interactive shell requires libc, we
-    // want to avoid this scenario all toghether as running this app on Alpine linux would use musl
-    // instead of libc. Hence the panic when unconfigured and early return to avoid mutating the
-    // config struct after setting new values.
-    let cfg: ScihubConfig = confy::load(crate_name!())?;
-    if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
-        panic!("No scihub credentials found! Run `scihub-query -s`");
-    }
-
     if m.is_present("STORECREDS") {
-        let new_cfg = ScihubConfig {
-            username: input().msg("Enter scihub username: ").get(),
-            password: input().msg("Enter scihub password: ").get(),
-        };
-
-        confy::store(crate_name!(), new_cfg)?;
-        println!("Credentials stored! \
-                  Subsequent queries will use newly entered credentials..");
-        return Ok(());
+        manage_config();
+        return Ok(())
     }
+
+    let cfg: ScihubConfig = match read_creds_from_env() {
+        Some(d) => d,
+        None => confy::load(crate_name!())?
+    };
 
     let mut wkt = String::new();
 
@@ -277,4 +265,34 @@ async fn request(url: &str, start: u64, client: &Client) -> Result<u64, Box<dyn 
             _ => panic!("Invalid response: {}", status)
         }
     }
+}
+
+fn manage_config() {
+    // Entering new config is problematic when reading from stdin f.ex if the WKT data is piped
+    // from stdin. Since checking if the app is running in an interactive shell requires libc, we
+    // want to avoid this scenario all toghether as running this app on Alpine linux would use musl
+    // instead of libc. Hence the panic when unconfigured and early return to avoid mutating the
+    // config struct after setting new values.
+    let cfg: ScihubConfig = confy::load(crate_name!()).unwrap();
+    if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
+        panic!("No scihub credentials found! Run `scihub-query -s`");
+    }
+
+    let new_cfg = ScihubConfig {
+        username: input().msg("Enter scihub username: ").get(),
+        password: input().msg("Enter scihub password: ").get(),
+    };
+
+    confy::store(crate_name!(), new_cfg).unwrap();
+    println!("Credentials stored! \
+              Subsequent queries will use newly entered credentials..");
+}
+
+fn read_creds_from_env() -> Option<ScihubConfig> {
+    if let Ok(u) = var("SCIHUB_USER") {
+        if let Ok(p) = var("SCIHUB_PASS") {
+            return Some(ScihubConfig { username: u, password: p })
+        }
+    }
+    None
 }

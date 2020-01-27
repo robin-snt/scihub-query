@@ -1,6 +1,6 @@
 [package]
 name = "scihub-query"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Robin Skahjem-Eriksen <skahjem-eriksen@stcorp.no>"]
 edition = "2018"
 readme = "README.md"

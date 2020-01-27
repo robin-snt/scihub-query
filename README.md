@@ -6,7 +6,8 @@ Currently this tool is an MVP with only the most basic features.
 
 ## Install
 
-If you don't have access to a pre-compiled binary, you can install from this repo:
+If you don't have access to a pre-compiled binary, you can install from this
+repo:
 
 ```sh
 cargo install scihub-query
@@ -20,7 +21,10 @@ scihub-query --help
 
 ## Configuration
 
-`scihub-query` requires scihub credentials to work. These can be written manually to `~/.config/scihub-query/scihub-query.toml`, or entered by providing the `-s` flag.
+`scihub-query` requires scihub credentials to work. These can be passed through
+environment variables `SCIHUB_USER` and `SCIHUB_PASS`, or be written manually
+to `~/.config/scihub-query/scihub-query.toml`, or entered by providing the `-s`
+flag.
 
 The config file format is as follows:
 
