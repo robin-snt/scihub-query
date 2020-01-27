@@ -5,6 +5,7 @@ extern crate serde_derive;
 extern crate serde_xml_rs;
 extern crate reqwest;
 extern crate confy;
+extern crate tokio;
 
 use clap::{Arg, App};
 
@@ -14,11 +15,13 @@ use std::{fmt, error::Error};
 use read_input::prelude::*;
 
 use serde::{Serialize, Deserialize};
+use futures::{stream, StreamExt};
+use reqwest::Client;
 
 #[derive(Deserialize, Debug)]
 struct Feed {
     #[serde(rename = "totalResults")]
-    pub total_results: i64,
+    pub total_results: u64,
     pub entry: Option<Vec<Entry>>,
 }
 
@@ -33,8 +36,8 @@ struct ScihubConfig {
     password: String,
 }
 
-// Specific error types and traits to convert error from output type of Url::set_* output type of
-// reqwest::blocking::get() ..
+// Specific error types and traits to convert error from output type of Url::set_* to output type
+// of reqwest::blocking::get() ..
 
 #[derive(Debug)]
 enum SciQueryError {
@@ -67,7 +70,8 @@ impl fmt::Display for SciQueryError {
 
 impl Error for SciQueryError {}
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let m = App::new(crate_name!())
         .version(crate_version!())
         .author(crate_authors!())
@@ -104,13 +108,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             .short("s")
             .long("--store-credentials")
             .help("Write new scihub credentials"))
+        .arg(Arg::with_name("LIMIT")
+            .short("l")
+            .long("--limit")
+            .help("Limit"))
+        .arg(Arg::with_name("QUERYSTRING")
+            .long("--query-string")
+            .help("Print scihub query string and exit"))
     .get_matches();
 
-    // Entering new config is problematic when reading from stdin if the WKT data is also piped in
-    // from stdin. Since checking if the app is running in an interactive shell requires libc,
-    // we want to avoid this scenario all toghether as running this app on Alpine linux would use
-    // musl instead of libc. Hence the panic when unconfigured and early return to avoid mutating
-    // the config struct after setting new values.
+    // Entering new config is problematic when reading from stdin f.ex if the WKT data is piped
+    // from stdin. Since checking if the app is running in an interactive shell requires libc, we
+    // want to avoid this scenario all toghether as running this app on Alpine linux would use musl
+    // instead of libc. Hence the panic when unconfigured and early return to avoid mutating the
+    // config struct after setting new values.
     let cfg: ScihubConfig = confy::load(crate_name!())?;
     if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
         panic!("No scihub credentials found! Run `scihub-query -s`");
@@ -153,8 +164,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let product_type = m.value_of("PRODUCT").unwrap();
 
     let ccover = match m.value_of("CCOVER") {
-        Some(s) => format!("AND cloudcoverpercentage:[0 TO {}] ", s),
-        None => "".to_string()
+        None => "".to_string(),
+        Some(s) => {
+            match s.parse::<usize>() {
+                Err(_) => panic!("Cloud cover must be integer between 0 and 100!"),
+                Ok(i) => {
+                    if i > 100 {
+                        panic!("Cloud cover must be integer between 0 and 100!")
+                    }
+
+                    format!("AND cloudcoverpercentage:[0 TO {}] ", i)
+                }
+            }
+        }
     };
 
     let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
@@ -171,19 +193,57 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     url.query_pairs_mut().append_pair("q", querystring.as_str());
 
-    request(url.as_str(), 0)
+    if m.is_present("QUERYSTRING") {
+        url.query_pairs_mut().append_pair("start", format!("{}", 0).as_str());
+        println!("{}", url);
+        return Ok(())
+    }
+
+    let client = Client::new();
+    let total_results = request(url.as_str(), 0, &client).await?;
+
+    let limit = match m.value_of("LIMIT") {
+        None => total_results,
+        Some(s) => {
+            match s.parse::<u64>() {
+                Err(_) => panic!("Limit value must be a positive integer!"),
+                Ok(i) => {
+                    if i > total_results {
+                        total_results
+                    } else {
+                        i
+                    }
+                }
+            }
+        }
+    };
+
+    let responses = stream::iter((100..limit).step_by(100))
+        .map(|n| {
+            request(url.as_str(), n, &client)
+        })
+        .buffered(10);
+    responses.for_each(|r| {
+        async {
+            match r {
+                Ok(_) => {},
+                Err(e) => eprintln!("Got an error: {}", e),
+            }
+        }
+    }).await;
+
+    Ok(())
 }
 
-// TODO: check if scihub paginated calls can be async
-fn request(url: &str, start: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn request(url: &str, start: u64, client: &Client) -> Result<u64, Box<dyn std::error::Error>> {
     let mut paginated_url = reqwest::Url::parse(url)?;
     paginated_url.query_pairs_mut().append_pair("start", format!("{}", start).as_str());
 
-    let res = reqwest::blocking::get(paginated_url.as_str())?;
+    let res = client.get(paginated_url.as_str()).send().await?;
     let status = res.status();
 
     if status.is_success() {
-        let t = &res.text()?;
+        let t = &res.text().await?;
         let xml_struct: std::result::Result<Feed, serde_xml_rs::Error>
                         = serde_xml_rs::from_str(&t.as_str());
 
@@ -196,15 +256,10 @@ fn request(url: &str, start: usize) -> Result<(), Box<dyn std::error::Error>> {
                                 println!("{}", e.title);
                             }
                         },
-                        None => {
-                            return Ok(())
-                        }
+                        None => {}
                     }
                 }
-
-                if feed.total_results > 100 {
-                    request(url, start + 100)?;
-                }
+                return Ok(feed.total_results)
             }
             Err(e) => {
                 println!("{}", t);
@@ -222,6 +277,4 @@ fn request(url: &str, start: usize) -> Result<(), Box<dyn std::error::Error>> {
             _ => panic!("Invalid response: {}", status)
         }
     }
-
-    Ok(())
 }

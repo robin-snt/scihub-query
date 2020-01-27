@@ -2,7 +2,7 @@
 
 This is a rudimentary tool for querying [scihub](https://scihub.copernicus.eu/dhus/search).
 
-Currently this tool is an MVP with only the most basic features and has no optimizations and probably some bugs.
+Currently this tool is an MVP with only the most basic features.
 
 ## Install
 
@@ -33,7 +33,7 @@ You will be prompted to enter your credentials if they are not found.
 
 ## Desired features
 
-- [ ] Asynchronous calls for paginated responses.
+- [X] Asynchronous calls for paginated responses.
 - [ ] Improved parameterization of query inputs.
 - [ ] Converting the entire XML response into JSON.
 - [ ] POST requests for large AOI's if scihub supports it.
