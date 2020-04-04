@@ -78,13 +78,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .about("Query scihub")
         .arg(Arg::with_name("BEGIN")
             .short("b")
-            .long("--begin-time")
+            .long("--begin-date")
             .takes_value(true)
             .required_unless("STORECREDS")
             .help("Date range start (YYYY-MM-DD)"))
         .arg(Arg::with_name("END")
             .short("e")
-            .long("--end-time")
+            .long("--end-date")
             .takes_value(true)
             .default_value("NOW")
             .help("Date range end (YYYY-MM-DD)"))
@@ -142,11 +142,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // TODO: support human time format
-    let begin_time = format!("{}T00:00:00.000Z", m.value_of("BEGIN").unwrap());
+    let begin_time = valid_date(m.value_of("BEGIN").unwrap());
+    // let begin_time = format!("{}T00:00:00.000Z", m.value_of("BEGIN").unwrap());
 
     let end_time = match m.value_of("END").unwrap() {
         "NOW" => "NOW".to_string(),
-        dt => format!("{}T00:00:00.000Z", dt)
+        dt => valid_date(dt)
     };
 
     let product_type = m.value_of("PRODUCT").unwrap();
@@ -295,4 +296,15 @@ fn read_creds_from_env() -> Option<ScihubConfig> {
         }
     }
     None
+}
+
+fn valid_date(s: &str) -> String {
+    let parts: Vec<&str> = s.split('-').collect();
+    match parts[..] {
+        [_, _, _] => {
+            return format!("{}T00:00:00.000Z", s);
+        },
+        // TODO: Proper error
+        _ => panic!("Malformed date! Ensure date follows: `YYYY-MM-DD`")
+    }
 }
