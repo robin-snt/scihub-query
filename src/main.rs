@@ -6,17 +6,27 @@ extern crate serde_xml_rs;
 extern crate reqwest;
 extern crate confy;
 extern crate tokio;
+extern crate wkt;
+extern crate geo;
 
 use clap::{Arg, App};
 
 use std::io::{self, Read};
 use std::fs::File;
+use std::convert::Into;
 use std::{fmt, error::Error, env::var};
 use read_input::prelude::*;
 
 use serde::{Serialize, Deserialize};
 use futures::{stream, StreamExt};
 use reqwest::Client;
+use wkt::ToWkt;
+use wkt::conversion::try_into_geometry;
+use geo::Geometry;
+use geo::algorithm::simplify::{Simplify};
+
+// 13 represents &start=XXXXXXX
+static REQUEST_LIMIT:usize = 2048 - 13;
 
 #[derive(Deserialize, Debug)]
 struct Feed {
@@ -127,17 +137,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None => confy::load(crate_name!())?
     };
 
-    let mut wkt = String::new();
+    let mut wkt_str = String::new();
 
     match m.value_of("WKT").unwrap() {
         "-" => {
             let stdin = io::stdin();
             let mut handle = stdin.lock();
-            handle.read_to_string(&mut wkt).expect("Error reading from stdin!");
+            handle.read_to_string(&mut wkt_str).expect("Error reading from stdin!");
         },
         filename => {
             let mut f = File::open(filename).expect("file not found");
-            f.read_to_string(&mut wkt).expect("Error reading from file!");
+            f.read_to_string(&mut wkt_str).expect("Error reading from file!");
         }
     }
 
@@ -170,21 +180,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
     url.set_credentials(&cfg)?;
-    url.query_pairs_mut().append_pair("rows", "100");
-    url.query_pairs_mut().append_pair("orderby", "beginposition asc");
-    let querystring = format!("platformname:Sentinel-2 \
-                               AND producttype:S2MSI{} \
-                               AND beginposition:[{} TO {}] \
-                               {}\
-                               AND footprint:\"Intersects({})\"",
-                              product_type, begin_time, end_time,
-                              ccover, wkt.trim());
 
-    url.query_pairs_mut().append_pair("q", querystring.as_str());
+    let mut scihub_footprint = wkt_str.trim().clone().to_string();
+    // TODO: Refine epsilon
+    let mut epsilon = 0.00001;
+
+    loop {
+        url.query_pairs_mut().append_pair("rows", "100");
+        url.query_pairs_mut().append_pair("orderby", "beginposition asc");
+        let querystring = format!("platformname:Sentinel-2 \
+                                   AND producttype:S2MSI{} \
+                                   AND beginposition:[{} TO {}] \
+                                   {}\
+                                   AND footprint:\"Intersects({})\"",
+                                  product_type, begin_time, end_time,
+                                  ccover, scihub_footprint);
+        url.query_pairs_mut().append_pair("q", querystring.as_str());
+
+        if url.as_str().len() < REQUEST_LIMIT {
+            break
+        }
+
+        scihub_footprint = simplify_polygon(wkt_str.trim(), &epsilon);
+        url.query_pairs_mut().clear();
+        epsilon *= 1.2;
+    }
 
     if m.is_present("QUERYSTRING") {
-        url.query_pairs_mut().append_pair("start", format!("{}", 0).as_str());
-        println!("{}", url);
+        url.query_pairs_mut().append_pair("start", "0");
+        // println!("{}", url);
         return Ok(())
     }
 
@@ -224,7 +248,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn request(url: &str, start: u64, client: &Client) -> Result<u64, Box<dyn std::error::Error>> {
+async fn request(url: &str, start: u64,
+                 client: &Client) -> Result<u64, Box<dyn std::error::Error>> {
+
     let mut paginated_url = reqwest::Url::parse(url)?;
     paginated_url.query_pairs_mut().append_pair("start", format!("{}", start).as_str());
 
@@ -251,7 +277,7 @@ async fn request(url: &str, start: u64, client: &Client) -> Result<u64, Box<dyn 
                 return Ok(feed.total_results)
             }
             Err(e) => {
-                println!("{}", t);
+                // println!("{}", t);
                 println!("Error parsing response XML! ({})", status.as_u16());
                 return Err(e.into())
             }
@@ -269,11 +295,13 @@ async fn request(url: &str, start: u64, client: &Client) -> Result<u64, Box<dyn 
 }
 
 fn manage_config() {
-    // Entering new config is problematic when reading from stdin f.ex if the WKT data is piped
-    // from stdin. Since checking if the app is running in an interactive shell requires libc, we
-    // want to avoid this scenario all toghether as running this app on Alpine linux would use musl
-    // instead of libc. Hence the panic when unconfigured and early return to avoid mutating the
-    // config struct after setting new values.
+    // Entering new config reads interactive user input from stdin, but when stdin is already used
+    // for reading WKT, we cannot ask for user input. This can be detected by checking if the app
+    // is running in an interactive shell, but that requires libc which we cannot rely on when
+    // Alpine Linux is supported, which uses musl instead of libc. To ensure that stdin is not used
+    // for reading WKT, we panic and prompt the user to run the application with the `-s`
+    // parameter, which disables WKT file as input to the CLI.
+
     let cfg: ScihubConfig = confy::load(crate_name!()).unwrap();
     if cfg.username.as_str() == "" || cfg.password.as_str() == "" {
         panic!("No scihub credentials found! Run `scihub-query -s`");
@@ -306,5 +334,23 @@ fn valid_date(s: &str) -> String {
         },
         // TODO: Proper error
         _ => panic!("Malformed date! Ensure date follows: `YYYY-MM-DD`")
+    }
+}
+
+fn simplify_polygon(wkt_str: &str, epsilon: &f32) -> String {
+    let wkt_roi: wkt::Wkt<f32> = wkt::Wkt::from_str(wkt_str).unwrap();
+
+    if wkt_roi.items.len() != 1 {
+        // TODO: Proper error
+        panic!("WKT contains more than one object!");
+    }
+
+    match try_into_geometry(&wkt_roi.items[0]).unwrap() {
+        Geometry::Polygon(p) => {
+            let simplified_wkt = Geometry::Polygon(p.simplify(epsilon)).to_wkt();
+            return format!("{}", simplified_wkt.items[0]);
+        },
+        // TODO: Proper error
+        _ => panic!("Only Polygon() allowed in WKT!")
     }
 }
