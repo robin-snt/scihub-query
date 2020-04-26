@@ -50,35 +50,35 @@ struct ScihubConfig {
 // of reqwest::blocking::get() ..
 
 #[derive(Debug)]
-enum SciQueryError {
-    Credential(())
+enum ScihubCredentialError {
+    Credentials(())
 }
 
-trait UrlCreds {
-    fn set_credentials(&mut self, cfg: &ScihubConfig) -> Result<(), SciQueryError>;
+trait ScihubBasicAuth {
+    fn set_scihub_auth(&mut self, cfg: &ScihubConfig) -> Result<(), ScihubCredentialError>;
 }
 
-impl From<()> for SciQueryError {
-    fn from(_: ()) -> SciQueryError {
-        SciQueryError::Credential(())
+impl From<()> for ScihubCredentialError {
+    fn from(_: ()) -> ScihubCredentialError {
+        ScihubCredentialError::Credentials(())
     }
 }
 
-impl UrlCreds for reqwest::Url {
-    fn set_credentials(&mut self, cfg: &ScihubConfig) -> Result<(), SciQueryError> {
+impl ScihubBasicAuth for reqwest::Url {
+    fn set_scihub_auth(&mut self, cfg: &ScihubConfig) -> Result<(), ScihubCredentialError> {
         self.set_username(&cfg.username.as_str())?;
         self.set_password(Some(&cfg.password.as_str()))?;
         Ok(())
     }
 }
 
-impl fmt::Display for SciQueryError {
+impl fmt::Display for ScihubCredentialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Error when setting credentials!")
     }
 }
 
-impl Error for SciQueryError {}
+impl Error for ScihubCredentialError {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -121,7 +121,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg(Arg::with_name("LIMIT")
             .short("l")
             .long("--limit")
-            .help("Limit"))
+            .takes_value(true)
+            .help("Entries capped at some LIMIT greater than 100."))
         .arg(Arg::with_name("QUERYSTRING")
             .long("--query-string")
             .help("Print scihub query string and exit"))
@@ -132,10 +133,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(())
     }
 
-    let cfg: ScihubConfig = match read_creds_from_env() {
-        Some(d) => d,
-        None => confy::load(crate_name!())?
-    };
+    let cfg: ScihubConfig = read_creds_from_env()
+        .unwrap_or(confy::load(crate_name!())?);
 
     let mut wkt_str = String::new();
 
@@ -162,24 +161,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let product_type = m.value_of("PRODUCT").unwrap();
 
-    let ccover = match m.value_of("CCOVER") {
-        None => "".to_string(),
-        Some(s) => {
+    let ccover = m.value_of("CCOVER")
+        .map(|s| {
             match s.parse::<usize>() {
                 Err(_) => panic!("Cloud cover must be integer between 0 and 100!"),
-                Ok(i) => {
+                Ok(mut i) => {
                     if i > 100 {
-                        panic!("Cloud cover must be integer between 0 and 100!")
+                        i = 100;
                     }
 
                     format!("AND cloudcoverpercentage:[0 TO {}] ", i)
                 }
             }
-        }
-    };
+        })
+        .unwrap_or("".to_string());
 
     let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
-    url.set_credentials(&cfg)?;
+    url.set_scihub_auth(&cfg)?;
 
     let mut scihub_footprint = wkt_str.trim().clone().to_string();
     // TODO: Refine epsilon
@@ -208,28 +206,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if m.is_present("QUERYSTRING") {
         url.query_pairs_mut().append_pair("start", "0");
-        // println!("{}", url);
+        println!("{}", url);
         return Ok(())
     }
 
     let client = Client::new();
     let total_results = request(url.as_str(), 0, &client).await?;
 
-    let limit = match m.value_of("LIMIT") {
-        None => total_results,
-        Some(s) => {
-            match s.parse::<u64>() {
-                Err(_) => panic!("Limit value must be a positive integer!"),
-                Ok(i) => {
-                    if i > total_results {
-                        total_results
-                    } else {
-                        i
-                    }
-                }
-            }
-        }
-    };
+    let limit = m.value_of("LIMIT")
+        .map(|s| s.parse::<u64>().expect("LIMIT must be a positive integer!"))
+        .unwrap_or(total_results);
 
     let responses = stream::iter((100..limit).step_by(100))
         .map(|n| {
@@ -265,19 +251,15 @@ async fn request(url: &str, start: u64,
         match xml_struct {
             Ok(feed) => {
                 if feed.total_results > 0 {
-                    match feed.entry {
-                        Some(entries) => {
-                            for e in entries {
-                                println!("{}", e.title);
-                            }
-                        },
-                        None => {}
-                    }
+                    feed.entry.map(|entries| {
+                        for e in entries {
+                            println!("{}", e.title);
+                        }
+                    });
                 }
                 return Ok(feed.total_results)
             }
             Err(e) => {
-                // println!("{}", t);
                 println!("Error parsing response XML! ({})", status.as_u16());
                 return Err(e.into())
             }
