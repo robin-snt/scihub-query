@@ -133,6 +133,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .takes_value(true)
             .default_value("simplified.wkt")
             .help("Write simplified WKT to file"))
+        .arg(Arg::with_name("TILE")
+            .short("-t")
+            .long("--tile-filter")
+            .takes_value(true)
+            .help("Only return products with specified S2 tile id"))
     .get_matches();
 
     if m.is_present("STORECREDS") {
@@ -183,6 +188,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
         .unwrap_or("".to_string());
 
+    let tile_filter = m.value_of("TILE")
+        // TODO: validate, e.g:
+        // let mut bytes = tile_filter.as_bytes();
+
+        // if bytes.starts_with(b"T") {
+        //     bytes = &bytes[1..];
+        // }
+
+        // match bytes {
+        //     &[
+        //         b'0'..=b'9', b'0'..=b'9',
+        //         b'a'..=b'z', b'a'..=b'z', b'a'..=b'z'
+        //     ] => {
+        //         println!("success!");
+        //     }
+        //     _ => panic!("invalid input!"),
+        // }
+        .map(|t| {
+            let string = String::from(t);
+            let tile_id =
+                if string.to_uppercase().starts_with('T') {
+                    let utmzone = string.get(1..3).unwrap();
+                    let latgrid = string.get(3..6).unwrap();
+                    format!("T{}{}", utmzone, latgrid.to_uppercase())
+                } else {
+                    let utmzone = string.get(0..2).unwrap();
+                    let latgrid = string.get(2..5).unwrap();
+                    format!("T{}{}", utmzone, latgrid.to_uppercase())
+                };
+            format!("AND filename: S2?_MSIL{}_*_{}_* ", product_type, tile_id)
+        })
+        .unwrap_or("".to_string());
+
     let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
     url.set_scihub_auth(&cfg)?;
 
@@ -197,15 +235,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                    AND producttype:S2MSI{} \
                                    AND beginposition:[{} TO {}] \
                                    {}\
+                                   {}\
                                    AND footprint:\"Intersects({})\"",
                                   product_type, begin_time, end_time,
-                                  ccover, scihub_footprint);
+                                  ccover, tile_filter, scihub_footprint);
         url.query_pairs_mut().append_pair("q", querystring.as_str());
 
         if url.as_str().len() < REQUEST_LIMIT {
             break
         }
-
         scihub_footprint = simplify_polygon(wkt_str.trim(), &epsilon);
         url.query_pairs_mut().clear();
         epsilon *= 1.2;
@@ -217,10 +255,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(())
     }
 
-if m.is_present("DUMPWKT") {
-    let scihub_safe_wkt_filename = m.value_of("DUMPWKT").unwrap();
-    dump_wkt(scihub_footprint, scihub_safe_wkt_filename);
-}
+    if m.is_present("DUMPWKT") {
+        let scihub_safe_wkt_filename = m.value_of("DUMPWKT").unwrap();
+        dump_wkt(scihub_footprint, scihub_safe_wkt_filename);
+    }
 
     let client = Client::new();
     let total_results = request(url.as_str(), 0, &client).await?;

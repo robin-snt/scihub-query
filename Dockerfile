@@ -14,6 +14,7 @@ RUN cd /tmp/build \
 FROM alpine:3.12.0
 COPY --from=builder /tmp/build/target/release/scihub-query /usr/bin
 RUN apk add --no-cache \
+    libgcc \
     openssl
 
 ENTRYPOINT ["/usr/bin/scihub-query"]
