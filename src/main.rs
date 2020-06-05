@@ -12,7 +12,9 @@ extern crate geo;
 use clap::{Arg, App};
 
 use std::io::{self, Read};
+use std::io::prelude::*;
 use std::fs::File;
+use std::path::Path;
 use std::convert::Into;
 use std::{fmt, error::Error, env::var};
 use read_input::prelude::*;
@@ -126,6 +128,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg(Arg::with_name("QUERYSTRING")
             .long("--query-string")
             .help("Print scihub query string and exit"))
+        .arg(Arg::with_name("DUMPWKT")
+            .long("--dump-wkt")
+            .takes_value(true)
+            .default_value("simplified.wkt")
+            .help("Write simplified WKT to file"))
     .get_matches();
 
     if m.is_present("STORECREDS") {
@@ -209,6 +216,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", url);
         return Ok(())
     }
+
+if m.is_present("DUMPWKT") {
+    let scihub_safe_wkt_filename = m.value_of("DUMPWKT").unwrap();
+    dump_wkt(scihub_footprint, scihub_safe_wkt_filename);
+}
 
     let client = Client::new();
     let total_results = request(url.as_str(), 0, &client).await?;
@@ -334,5 +346,23 @@ fn simplify_polygon(wkt_str: &str, epsilon: &f32) -> String {
         },
         // TODO: Proper error
         _ => panic!("Only Polygon() allowed in WKT!")
+    }
+}
+
+fn dump_wkt(wkt_str: String, fname: &str) {
+    let path = Path::new(fname);
+    let display = path.display();
+
+    let mut file = match File::create(&path) {
+        Err(why) => {
+            eprintln!("couldn't create {}: {}", display, why);
+            return
+        },
+        Ok(file) => file,
+    };
+
+    match file.write_all(wkt_str.as_bytes()) {
+        Err(why) => eprintln!("couldn't write to {}: {}", display, why),
+        Ok(_) => {},
     }
 }
