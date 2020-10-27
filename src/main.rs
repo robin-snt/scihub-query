@@ -27,7 +27,7 @@ use wkt::conversion::try_into_geometry;
 use geo::Geometry;
 use geo::algorithm::simplify::{Simplify};
 
-// 13 represents &start=XXXXXXX
+// 13 represents `&start=XXXXXXX` needed for paginated requests
 static REQUEST_LIMIT:usize = 2048 - 13;
 
 #[derive(Deserialize, Debug)]
