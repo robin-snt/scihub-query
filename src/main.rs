@@ -116,6 +116,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .long("cloud-cover")
             .takes_value(true)
             .help("Cloud cover percentage. 0 (clear sky) - 100 (complete cover)"))
+        .arg(Arg::with_name("RELATIVEORBIT")
+            .short("r")
+            .long("relative-orbit")
+            .takes_value(true)
+            .multiple(true)
+            .number_of_values(1)
+            .help("Relative orbit integer: 1-143"))
         .arg(Arg::with_name("STORECREDS")
             .short("s")
             .long("store-credentials")
@@ -188,6 +195,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
         .unwrap_or("".to_string());
 
+    let relative_orbit = {
+        if m.is_present("RELATIVEORBIT") {
+            format!("AND ({})", m.values_of("RELATIVEORBIT")
+                .unwrap()
+                .map(|s| {
+                    match s.parse::<usize>() {
+                        Err(_) => panic!("Relative orbit must be integer between 1 and 143!"),
+                        Ok(mut i) => {
+                            if i < 1 {
+                                i = 1;
+                            } else if i > 143 {
+                                i = 143;
+                            }
+
+                            format!("relativeorbitnumber:{}", i)
+                        }
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join(" OR ")
+            )
+        } else {
+            "".to_string()
+        }
+    };
+
     let tile_filter = m.value_of("TILE")
         // TODO: validate, e.g:
         // let mut bytes = tile_filter.as_bytes();
@@ -236,9 +269,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                    AND beginposition:[{} TO {}] \
                                    {}\
                                    {}\
+                                   {}\
                                    AND footprint:\"Intersects({})\"",
                                   product_type, begin_time, end_time,
-                                  ccover, tile_filter, scihub_footprint);
+                                  ccover, tile_filter, relative_orbit,
+                                  scihub_footprint);
         url.query_pairs_mut().append_pair("q", querystring.as_str());
 
         if url.as_str().len() < REQUEST_LIMIT {
