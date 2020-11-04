@@ -132,6 +132,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .long("limit")
             .takes_value(true)
             .help("Entries capped at some LIMIT greater than 100."))
+        .arg(Arg::with_name("API_URL")
+            .short("u")
+            .long("url")
+            .takes_value(true)
+            .default_value("https://scihub.copernicus.eu/dhus/search")
+            .help("Opensearch API URL"))
         .arg(Arg::with_name("QUERYSTRING")
             .long("query-string")
             .help("Print scihub query string and exit"))
@@ -254,7 +260,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
         .unwrap_or("".to_string());
 
-    let mut url = reqwest::Url::parse("https://scihub.copernicus.eu/dhus/search")?;
+    let api_url = m.value_of("API_URL").unwrap();
+    let mut url = reqwest::Url::parse(api_url)?;
     url.set_scihub_auth(&cfg)?;
 
     let mut scihub_footprint = wkt_str.trim().clone().to_string();
